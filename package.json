@@ -1,0 +1,36 @@
+{
+  "name": "studentweb",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint",
+    "test:unit": "node --experimental-strip-types --test tests/unit/*.test.mjs",
+    "test:e2e": "playwright test",
+    "db:status": "node --env-file-if-exists=.env.local scripts/db-migrate.mjs status",
+    "db:migrate": "node --env-file-if-exists=.env.local scripts/db-migrate.mjs migrate",
+    "db:verify": "node --env-file-if-exists=.env.local scripts/db-migrate.mjs verify"
+  },
+  "dependencies": {
+    "@clerk/nextjs": "7.9.25",
+    "@neondatabase/serverless": "1.2.0",
+    "@zip.js/zip.js": "2.24.0",
+    "client-zip": "2.5.1",
+    "idb-keyval": "6.3.0",
+    "next": "16.4.5",
+    "react": "19.3.0",
+    "react-dom": "19.3.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.64.0",
+    "@types/node": "20.19.24",
+    "@types/react": "19.2.2",
+    "@types/react-dom": "19.2.2",
+    "eslint": "9.38.0",
+    "eslint-config-next": "16.4.5",
+    "typescript": "5.9.3"
+  }
+}

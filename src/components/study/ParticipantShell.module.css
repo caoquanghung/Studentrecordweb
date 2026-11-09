@@ -1,0 +1,43 @@
+.shell { min-height: 100vh; background: radial-gradient(circle at 50% -18%, #dbeafe 0, transparent 33rem), var(--canvas); }
+.header { height: 72px; display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 0 clamp(18px, 5vw, 72px); border-bottom: 1px solid var(--line); background: rgb(255 255 255 / 90%); backdrop-filter: blur(18px); }
+.brand { display: flex; align-items: center; gap: 12px; }
+.brandMark { width: 42px; height: 42px; display: grid; place-items: center; color: white; border-radius: 12px; background: linear-gradient(135deg, var(--blue-600), var(--blue-800)); box-shadow: 0 7px 20px rgb(37 99 235 / 24%); }
+.brand strong, .brand span { display: block; }
+.brand strong { font-size: 16px; letter-spacing: -.02em; }
+.brand span { margin-top: 2px; color: var(--muted); font-size: 11px; }
+.mode { padding: 6px 10px; color: var(--warning); border: 1px solid #fde68a; border-radius: 999px; background: var(--warning-soft); font-size: 11px; font-weight: 800; }
+.main { width: min(920px, calc(100% - 32px)); margin: 0 auto; padding: 38px 0 72px; }
+.stepper { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); margin-bottom: 24px; }
+.step { position: relative; display: grid; justify-items: center; gap: 7px; color: #94a3b8; font-size: 10px; font-weight: 750; text-align: center; }
+.step::before { content: ''; position: absolute; z-index: 0; top: 13px; left: -50%; width: 100%; height: 2px; background: #dbe4f0; }
+.step:first-child::before { display: none; }
+.stepNumber { z-index: 1; width: 28px; height: 28px; display: grid; place-items: center; border: 2px solid #cbd5e1; border-radius: 50%; background: var(--canvas); }
+.stepActive, .stepDone { color: var(--blue-700); }
+.stepActive .stepNumber, .stepDone .stepNumber { color: white; border-color: var(--blue-600); background: var(--blue-600); }
+.stepDone::before, .stepActive::before { background: var(--blue-600); }
+.panel { overflow: hidden; border: 1px solid var(--line); border-radius: 20px; background: var(--panel); box-shadow: 0 22px 55px rgb(15 23 42 / 8%); }
+.panelHeader { padding: 28px 30px 22px; border-bottom: 1px solid #edf2f7; }
+.eyebrow { display: block; margin-bottom: 8px; color: var(--blue-700); font-size: 10px; font-weight: 850; letter-spacing: .16em; text-transform: uppercase; }
+.panelHeader h1 { font-size: clamp(25px, 4vw, 36px); letter-spacing: -.04em; }
+.panelHeader p { max-width: 680px; margin-top: 10px; color: var(--body); font-size: 14px; line-height: 1.7; }
+.panelBody { padding: 28px 30px 30px; }
+.actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 10px; margin-top: 28px; }
+.primary, .secondary, .danger { min-height: 44px; display: inline-flex; align-items: center; justify-content: center; gap: 8px; padding: 0 18px; border-radius: 11px; font-weight: 800; cursor: pointer; }
+.primary { color: white; border: 1px solid var(--blue-600); background: linear-gradient(135deg, var(--blue-600), var(--blue-800)); box-shadow: 0 8px 20px rgb(37 99 235 / 20%); }
+.secondary { color: var(--blue-700); border: 1px solid #bfdbfe; background: var(--blue-50); }
+.danger { color: var(--danger); border: 1px solid #fecdd3; background: var(--danger-soft); }
+.primary:disabled, .secondary:disabled, .danger:disabled { cursor: not-allowed; opacity: .55; box-shadow: none; }
+.notice { display: flex; align-items: flex-start; gap: 12px; padding: 14px 16px; color: var(--body); border: 1px solid var(--line); border-radius: 12px; background: #f8fafc; font-size: 13px; line-height: 1.6; }
+.notice strong { display: block; color: var(--ink); }
+.error { color: #991b1b; border-color: #fecaca; background: #fef2f2; }
+.success { color: #065f46; border-color: #a7f3d0; background: var(--success-soft); }
+.loading { min-height: 420px; display: grid; place-items: center; color: var(--muted); }
+.spinner { width: 34px; height: 34px; margin: 0 auto 14px; border: 3px solid var(--blue-100); border-top-color: var(--blue-600); border-radius: 50%; animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (max-width: 680px) {
+  .header { padding-inline: 16px; }
+  .main { width: min(100% - 20px, 920px); padding-top: 24px; }
+  .panelHeader, .panelBody { padding: 22px 18px; }
+  .step span:last-child { display: none; }
+  .actions > * { width: 100%; }
+}

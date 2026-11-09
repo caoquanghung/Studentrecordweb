@@ -1,0 +1,56 @@
+:root {
+  --font-geist-sans: Inter, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-geist-mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  --blue-950: #172554;
+  --blue-800: #1e40af;
+  --blue-700: #1d4ed8;
+  --blue-600: #2563eb;
+  --blue-100: #dbeafe;
+  --blue-50: #eff6ff;
+  --ink: #0f172a;
+  --body: #475569;
+  --muted: #64748b;
+  --line: #dbe4f0;
+  --canvas: #f5f7fb;
+  --panel: #ffffff;
+  --success: #059669;
+  --success-soft: #ecfdf5;
+  --warning: #b45309;
+  --warning-soft: #fffbeb;
+  --danger: #dc2626;
+  --danger-soft: #fff1f2;
+  --focus: rgb(37 99 235 / 30%);
+  color-scheme: light;
+}
+
+* { box-sizing: border-box; padding: 0; margin: 0; }
+html { min-height: 100%; background: var(--canvas); }
+body {
+  min-height: 100vh;
+  color: var(--ink);
+  background: var(--canvas);
+  font-family: var(--font-geist-sans), "Be Vietnam Pro", Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+a { color: inherit; text-decoration: none; }
+button, input, select, textarea { font: inherit; }
+button { touch-action: manipulation; }
+::selection { color: var(--blue-950); background: var(--blue-100); }
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+:focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+}

@@ -1,0 +1,57 @@
+%% Use-case view expressed with flowchart syntax for Mermaid preview compatibility.
+%% Solid lines are actor associations, not execution order.
+flowchart LR
+    participant["«actor» Người tham gia / Học sinh"]
+    admin["«actor» Admin / Nhà nghiên cứu"]
+    emailService["«actor» Dịch vụ email"]
+
+    subgraph studentWeb ["Student Web — HCI User Study"]
+        uc01(["UC-01 Theo dõi chỉ tiêu combination"])
+        uc02(["UC-02 Mời tham gia qua email"])
+        uc03(["UC-03 Tiếp nhận lời mời và định danh"])
+        uc04(["UC-04 Xem mô tả và khai pre-study"])
+        uc05(["UC-05 Xác nhận đồng thuận"])
+        uc06(["UC-06 Kiểm tra tốc độ tải"])
+        uc07(["UC-07 Nhập gói video ZIP"])
+        uc08(["UC-08 Tham gia phiên và xem video"])
+        uc09(["UC-09 Phân bổ combination và giữ suất"])
+        uc10(["UC-10 Ghi và đồng bộ dữ liệu phiên"])
+        uc11(["UC-11 Xử lý gián đoạn phiên"])
+        uc12(["UC-12 Khảo sát post-study và hoàn tất"])
+        uc13(["UC-13 Cung cấp QR nhận thưởng"])
+        uc14(["UC-14 Ghi nhận chuyển thưởng"])
+        uc15(["UC-15 Gửi email cảm ơn"])
+    end
+
+    admin --- uc01
+    admin --- uc02
+    admin --- uc14
+    admin --- uc15
+
+    participant --- uc03
+    participant --- uc04
+    participant --- uc05
+    participant --- uc06
+    participant --- uc07
+    participant --- uc08
+    participant --- uc11
+    participant --- uc12
+    participant --- uc13
+
+    emailService --- uc02
+    emailService --- uc15
+
+    uc04 -.->|"«include»"| uc05
+    uc08 -.->|"«include»"| uc06
+    uc08 -.->|"«include»"| uc09
+    uc08 -.->|"«include»"| uc10
+    uc12 -.->|"«include»"| uc10
+    uc07 -.->|"«extend» khi chọn nguồn ZIP"| uc08
+    uc11 -.->|"«extend» khi phiên gián đoạn"| uc08
+    uc11 -.->|"«extend» khi khảo sát gián đoạn"| uc12
+
+    classDef actor fill:#eff6ff,stroke:#2563eb,color:#172554
+    classDef support fill:#f8fafc,stroke:#64748b,color:#0f172a
+    class participant,admin,emailService actor
+    class uc09,uc10 support
+    style studentWeb fill:#ffffff,stroke:#475569,color:#0f172a
