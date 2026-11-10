@@ -1,6 +1,7 @@
 'use client';
 
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Icon } from '@/components/ui/Icon';
 import { studyClient } from '@/lib/study/client';
@@ -249,7 +250,14 @@ function Preparation({ status, refresh }: { status: StudyStatus; refresh: () => 
   </StudyPanel>;
 }
 
+/** Admins land on /admin unless they explicitly open the participant preview (`/?preview=participant`). */
+function shouldRedirectToAdmin(status: StudyStatus) {
+  return status.role === 'admin'
+    && new URLSearchParams(window.location.search).get('preview') !== 'participant';
+}
+
 export function StudyFlow() {
+  const router = useRouter();
   const [status, setStatus] = useState<StudyStatus | null>(null);
   const [step, setStep] = useState<PreStep>('introduction');
   const [busy, setBusy] = useState(false);
@@ -263,13 +271,17 @@ export function StudyFlow() {
     let current = true;
     studyClient.status().then((next) => {
       if (!current) return;
+      if (shouldRedirectToAdmin(next)) {
+        router.replace('/admin');
+        return;
+      }
       setStatus(next);
       setStep(initialStep(next));
     }).catch((cause) => {
       if (current) setError(cause instanceof Error ? cause.message : 'Không thể tải trạng thái study.');
     });
     return () => { current = false; };
-  }, []);
+  }, [router]);
   const mode = status?.mode;
   if (error && !status) return <ParticipantShell currentStep="introduction"><StudyPanel eyebrow="Không thể tiếp tục" title="Có lỗi khi tải study" description={error}><div className={participantStyles.actions}><button className={participantStyles.secondary} onClick={() => window.location.reload()}>Thử lại</button></div></StudyPanel></ParticipantShell>;
   if (!status) return <ParticipantShell currentStep="introduction"><div className={participantStyles.loading}><div><div className={participantStyles.spinner} /><p>Đang kiểm tra lời mời và tiến trình…</p></div></div></ParticipantShell>;

@@ -20,7 +20,7 @@ export function AdminShell({ active, title, description, mode, actions, children
     <button className={styles.menu} type="button" aria-label="Mở điều hướng" onClick={() => setOpen((value) => !value)}>☰</button>
     <aside className={`${styles.sidebar} ${open ? styles.sidebarOpen : ''}`}>
       <div><Link className={styles.brand} href="/admin"><span className={styles.mark}><Icon name="book" /></span><span><strong>Lecture Study</strong><span>Research Administration</span></span></Link><nav className={styles.nav} aria-label="Quản trị study">{items.map((item) => <Link key={item.href} href={item.href} className={active === item.href ? styles.active : ''} onClick={() => setOpen(false)}><Icon name={item.icon} size={18} />{item.label}</Link>)}</nav></div>
-      <footer className={styles.footer}>{mode === 'demo' && <span className={styles.demo}>DEMO DATA · KHÔNG PHẢI DỮ LIỆU THẬT</span>}<Link className={styles.participantLink} href="/">Xem giao diện participant</Link><SignOutControl className={styles.signOut} /></footer>
+      <footer className={styles.footer}>{mode === 'demo' && <span className={styles.demo}>DEMO DATA · KHÔNG PHẢI DỮ LIỆU THẬT</span>}<Link className={styles.participantLink} href="/?preview=participant">Xem giao diện participant</Link><SignOutControl className={styles.signOut} /></footer>
     </aside>
     <main className={styles.main}><div className={styles.content}><header className={styles.header}><div><span>Quản trị nghiên cứu</span><h1>{title}</h1><p>{description}</p></div>{actions && <div className={styles.headerActions}>{actions}</div>}</header>{children}</div></main>
   </div>;
