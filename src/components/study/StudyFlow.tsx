@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Icon } from '@/components/ui/Icon';
 import { studyClient } from '@/lib/study/client';
+import { useFormTiming } from '@/lib/study/form-timing';
 import { checkStreamingReadiness } from '@/lib/study/readiness-client';
 import { downloadStudyPackage, prepareZipPackage } from '@/lib/study/zip-client';
 import type { SourceMode, StudyPackageDescriptor, StudyStatus } from '@/types/study';
@@ -64,8 +65,7 @@ function Introduction({ next }: { next: () => void }) {
 function Consent({ submitting, onSubmit, back }: { submitting: boolean; onSubmit: (name: string, timing: Record<string, unknown>) => void; back: () => void }) {
   const [checks, setChecks] = useState([false, false, false, false]);
   const [name, setName] = useState('');
-  const openedAtRef = useRef(0);
-  useEffect(() => { openedAtRef.current = Date.now(); }, []);
+  const formTiming = useFormTiming();
   const ready = checks.every(Boolean) && name.trim().length >= 2;
   const labels = [
     'Tôi đã đọc hoặc được giải thích về hoạt động và dữ liệu được thu thập.',
@@ -84,20 +84,19 @@ function Consent({ submitting, onSubmit, back }: { submitting: boolean; onSubmit
       </div>
       <div className={styles.checks}>{labels.map((label, index) => <label className={styles.check} key={label}><input type="checkbox" checked={checks[index]} onChange={(event) => setChecks((current) => current.map((value, item) => item === index ? event.target.checked : value))} /><span>{label}</span></label>)}</div>
       <div className={styles.field}><label htmlFor="participant-name">Họ tên xác nhận <span className={styles.required}>*</span></label><input id="participant-name" value={name} onChange={(event) => setName(event.target.value)} autoComplete="name" /><span className={styles.hint}>Tên được lưu cùng phiên bản biểu mẫu đồng thuận.</span></div>
-      <div className={participantStyles.actions}><button className={participantStyles.secondary} type="button" onClick={back}>Quay lại</button><button className={participantStyles.primary} type="button" disabled={!ready || submitting} onClick={() => onSubmit(name, { durationMs: Date.now() - openedAtRef.current })}>{submitting ? 'Đang lưu…' : 'Đồng ý và tiếp tục'}</button></div>
+      <div className={participantStyles.actions}><button className={participantStyles.secondary} type="button" onClick={back}>Quay lại</button><button className={participantStyles.primary} type="button" disabled={!ready || submitting} onClick={() => onSubmit(name, formTiming())}>{submitting ? 'Đang lưu…' : 'Đồng ý và tiếp tục'}</button></div>
     </div>
   </StudyPanel>;
 }
 
 function PreStudy({ submitting, onSubmit }: { submitting: boolean; onSubmit: (answers: Record<string, unknown>, timing: Record<string, unknown>) => void }) {
   const formRef = useRef<HTMLFormElement>(null);
-  const openedAtRef = useRef(0);
-  useEffect(() => { openedAtRef.current = Date.now(); }, []);
+  const formTiming = useFormTiming();
   function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
     const answers = Object.fromEntries(form.entries());
-    onSubmit(answers, { durationMs: Date.now() - openedAtRef.current });
+    onSubmit(answers, formTiming());
   }
   return <StudyPanel eyebrow="Pre-study" title="Một vài thông tin về bạn" description="Câu trả lời có thể được thuật toán phân bổ playlist sử dụng. Chúng tôi không dùng câu trả lời tự đánh giá như một bài kiểm tra kiến thức.">
     <form ref={formRef} className={styles.form} onSubmit={submit}>
@@ -132,6 +131,9 @@ function Preparation({ status, refresh }: { status: StudyStatus; refresh: () => 
   const [message, setMessage] = useState('');
   const [descriptor, setDescriptor] = useState<StudyPackageDescriptor | null>(null);
   const [progressText, setProgressText] = useState('');
+  const [audioTested, setAudioTested] = useState(false);
+  const [audioConfirmed, setAudioConfirmed] = useState(false);
+  const [audioMessage, setAudioMessage] = useState('');
   const fileRef = useRef<HTMLInputElement>(null);
   const combination = status.combination;
   const assignment = status.assignment;
@@ -150,7 +152,7 @@ function Preparation({ status, refresh }: { status: StudyStatus; refresh: () => 
     setBusy(true); setMessage('');
     try {
       if (!combination) throw new Error('Combination không còn khả dụng.');
-      const metrics = await checkStreamingReadiness(combination);
+      const metrics = await checkStreamingReadiness(combination, status.policy);
       await studyClient.readiness('stream', true, metrics);
       setReady(true);
       setMessage(`Streaming sẵn sàng (${metrics.downloadMbps.toFixed(1)} Mbps; yêu cầu ${metrics.requiredMbps.toFixed(1)} Mbps).`);
@@ -191,6 +193,33 @@ function Preparation({ status, refresh }: { status: StudyStatus; refresh: () => 
       setMessage(error instanceof Error ? error.message : 'Không thể tải package.');
     } finally { setBusy(false); }
   }
+  async function playAudioTest() {
+    setAudioMessage('');
+    setAudioTested(false);
+    setAudioConfirmed(false);
+    try {
+      const AudioContextClass = window.AudioContext
+        ?? (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+      if (!AudioContextClass) throw new Error('Trình duyệt không hỗ trợ kiểm tra âm thanh Web Audio.');
+      const audioContext = new AudioContextClass();
+      const oscillator = audioContext.createOscillator();
+      const gain = audioContext.createGain();
+      oscillator.type = 'sine';
+      oscillator.frequency.value = 523.25;
+      gain.gain.value = 0.08;
+      oscillator.connect(gain);
+      gain.connect(audioContext.destination);
+      oscillator.onended = () => { void audioContext.close(); };
+      await audioContext.resume();
+      oscillator.start();
+      oscillator.stop(audioContext.currentTime + 0.7);
+      setAudioTested(true);
+      setAudioMessage('Âm thử đã phát. Hãy điều chỉnh âm lượng hệ thống nếu cần rồi xác nhận bên dưới.');
+    } catch (error) {
+      setAudioMessage(error instanceof Error ? error.message : 'Không thể phát âm thử.');
+    }
+  }
+  const canContinue = ready && audioConfirmed;
   return <StudyPanel eyebrow="Chuẩn bị nội dung" title="Playlist của bạn đã được giữ chỗ" description="Chuẩn bị toàn bộ điều kiện trước khi bắt đầu. Việc tải hoặc nhập ZIP không kéo dài thời hạn giữ suất.">
     <div className={styles.stack}>
       <div className={styles.assignment}>
@@ -208,8 +237,14 @@ function Preparation({ status, refresh }: { status: StudyStatus; refresh: () => 
         {source === 'zip' && <><input ref={fileRef} className={styles.fileInput} type="file" accept=".zip,application/zip" onChange={(event) => void importZip(event.target.files?.[0])} /><div className={participantStyles.actions}><button className={participantStyles.secondary} type="button" disabled={busy || !descriptor} onClick={() => void downloadPackage()}>Tải package ZIP</button><button className={participantStyles.secondary} type="button" disabled={busy} onClick={() => fileRef.current?.click()}>Import và xác minh ZIP</button></div></>}
         {source === 'stream' && <button className={participantStyles.secondary} type="button" disabled={busy} onClick={() => void runStreamingReadiness()}>{busy ? 'Đang kiểm tra…' : 'Kiểm tra khả năng streaming'}</button>}
       </div>
+      <div className={styles.readiness}>
+        <div className={styles.readinessRow}><span>Kiểm tra âm thanh</span><strong className={audioConfirmed ? styles.statusOk : styles.statusWait}>{audioConfirmed ? 'Đã xác nhận' : 'Chưa xác nhận'}</strong></div>
+        <button className={participantStyles.secondary} type="button" onClick={() => void playAudioTest()}>Phát âm thử</button>
+        {audioMessage && <p className={styles.hint} aria-live="polite">{audioMessage}</p>}
+        <label className={styles.audioCheck}><input type="checkbox" disabled={!audioTested} checked={audioConfirmed} onChange={(event) => setAudioConfirmed(event.target.checked)} /><span>Tôi nghe rõ âm thử ở mức âm lượng phù hợp.</span></label>
+      </div>
       <div className={participantStyles.notice}><Icon name="shield" /><div><strong>Khi nào quy tắc nghiêm ngặt bắt đầu?</strong>Chỉ sau khi bạn vào màn hình study và bấm “Bắt đầu study”. Hãy hoàn tất kiểm tra âm thanh, đóng ứng dụng gây xao nhãng và cắm sạc trước đó.</div></div>
-      <div className={participantStyles.actions}><Link className={participantStyles.primary} aria-disabled={!ready} tabIndex={ready ? 0 : -1} href={ready ? `/study/run?source=${source}` : '#'} onClick={(event) => { if (!ready) event.preventDefault(); }}>Tiếp tục đến màn hình study <Icon name="chevron" size={17} /></Link></div>
+      <div className={participantStyles.actions}><Link className={participantStyles.primary} aria-disabled={!canContinue} tabIndex={canContinue ? 0 : -1} href={canContinue ? `/study/run?source=${source}` : '#'} onClick={(event) => { if (!canContinue) event.preventDefault(); }}>Tiếp tục đến màn hình study <Icon name="chevron" size={17} /></Link></div>
     </div>
   </StudyPanel>;
 }

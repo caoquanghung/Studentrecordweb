@@ -6,7 +6,7 @@ import { useRouter } from 'next/navigation';
 import { Icon } from '@/components/ui/Icon';
 import { studyClient } from '@/lib/study/client';
 import { enqueueTelemetry, flushTelemetry, purgeTelemetryQueue } from '@/lib/study/telemetry-client';
-import { getPreparedVideoUrl, hasPreparedPackage } from '@/lib/study/zip-client';
+import { clearPreparedPackage, getPreparedVideoUrl, hasPreparedPackage } from '@/lib/study/zip-client';
 import type { SourceMode, StudyStatus, TelemetryEvent } from '@/types/study';
 import { PostStudyForm } from './PostStudyForm';
 import styles from './StudyRuntime.module.css';
@@ -24,7 +24,6 @@ export function StudyRuntime({ initialSourceMode }: { initialSourceMode: SourceM
   const sequenceRef = useRef(0);
   const acknowledgedRef = useRef(0);
   const startedAtRef = useRef(0);
-  const postOpenedAtRef = useRef(0);
   const lastCheckpointRef = useRef(-1);
   const bufferingTimerRef = useRef<number | null>(null);
   const phaseRef = useRef<RuntimePhase>('loading');
@@ -81,7 +80,7 @@ export function StudyRuntime({ initialSourceMode }: { initialSourceMode: SourceM
 
   async function record(eventType: string, payload?: Record<string, unknown>) {
     const authority = authorityRef.current;
-    if (!authority) return;
+    if (!authority || !armedRef.current || invalidatingRef.current) return;
     try {
       await enqueueTelemetry(authority.attemptId, createEvent(eventType, payload));
     } catch {
@@ -112,7 +111,7 @@ export function StudyRuntime({ initialSourceMode }: { initialSourceMode: SourceM
         return;
       }
       if (initialSourceMode === 'zip'
-        && !hasPreparedPackage(next.combination.id, next.combination.version)) {
+       && !hasPreparedPackage(next.participantId ?? '', next.combination.id, next.combination.version)) {
         setError('Package ZIP không còn trong bộ nhớ của tab này. Hãy quay lại và import/xác minh package trước khi bắt đầu.');
         transition('error');
         return;
@@ -135,7 +134,7 @@ export function StudyRuntime({ initialSourceMode }: { initialSourceMode: SourceM
       if (armedRef.current && !document.fullscreenElement) void invalidate('fullscreen-exited');
     };
     const offline = () => { if (armedRef.current) void invalidate('connection-lost'); };
-    const beforeUnload = () => {
+    const beforeUnload = (event: BeforeUnloadEvent) => {
       if (!armedRef.current) return;
       const authority = authorityRef.current;
       if (!authority) return;
@@ -146,6 +145,8 @@ export function StudyRuntime({ initialSourceMode }: { initialSourceMode: SourceM
           reason: 'page-unloaded',
         })], { type: 'application/json' }),
       );
+      event.preventDefault();
+      event.returnValue = '';
     };
     document.addEventListener('visibilitychange', hidden);
     document.addEventListener('fullscreenchange', fullscreen);
@@ -192,7 +193,7 @@ export function StudyRuntime({ initialSourceMode }: { initialSourceMode: SourceM
       return;
     }
     if (initialSourceMode === 'zip' && status?.combination
-      && !hasPreparedPackage(status.combination.id, status.combination.version)) {
+      && !hasPreparedPackage(status.participantId ?? '', status.combination.id, status.combination.version)) {
       setError('Package ZIP chưa sẵn sàng. Hãy quay lại bước chuẩn bị.');
       return;
     }
@@ -276,14 +277,13 @@ export function StudyRuntime({ initialSourceMode }: { initialSourceMode: SourceM
       acknowledgedRef.current = Math.max(acknowledgedRef.current, ack);
       const next = await studyClient.videoComplete(authority.attemptId, authority.controlVersion);
       setStatus(next);
-      postOpenedAtRef.current = performance.now();
       transition('post-study');
     } catch {
       await invalidate('telemetry-sync-failed');
     }
   }
 
-  async function submitPostStudy(answers: Record<string, unknown>) {
+  async function submitPostStudy(answers: Record<string, unknown>, timing: Record<string, unknown>) {
     const authority = authorityRef.current;
     if (!authority) return;
     setBusy(true);
@@ -296,7 +296,7 @@ export function StudyRuntime({ initialSourceMode }: { initialSourceMode: SourceM
         authority.controlVersion,
         answers,
         true,
-        { durationMs: Math.max(0, performance.now() - postOpenedAtRef.current) },
+        timing,
       );
       const ack = await flushTelemetry(authority.attemptId, authority.controlVersion);
       acknowledgedRef.current = Math.max(acknowledgedRef.current, ack);
@@ -308,6 +308,7 @@ export function StudyRuntime({ initialSourceMode }: { initialSourceMode: SourceM
       armedRef.current = false;
       clearBufferingTimer();
       await purgeTelemetryQueue(authority.attemptId);
+      clearPreparedPackage();
       setStatus(complete);
       if (document.fullscreenElement) await document.exitFullscreen();
       router.replace('/study/complete');
@@ -360,7 +361,7 @@ export function StudyRuntime({ initialSourceMode }: { initialSourceMode: SourceM
   const currentVideo = combination?.videos[videoIndex];
   const videoSource = currentVideo && combination
     ? (initialSourceMode === 'zip'
-      ? getPreparedVideoUrl(combination.id, combination.version, currentVideo.id)
+      ? getPreparedVideoUrl(status?.participantId ?? '', combination.id, combination.version, currentVideo.id)
       : currentVideo.storageUrl)
     : null;
   return <div className={styles.runtime}>
@@ -384,6 +385,6 @@ export function StudyRuntime({ initialSourceMode }: { initialSourceMode: SourceM
       onError={() => void invalidate('media-error')}
       onEnded={() => void ended()}
     /></div></main>}
-    {phase === 'post-study' && <main className={styles.postShell}><section className={styles.postCard}><header className={styles.postHeader}><span>Post-study</span><h1>Trải nghiệm của bạn</h1><p>Hãy trả lời dựa trên playlist vừa xem. Không có câu trả lời đúng hoặc sai. Quy tắc tập trung vẫn còn hiệu lực đến khi gửi thành công.</p></header>{error && <p className={styles.error}>{error}</p>}<PostStudyForm busy={busy} onSubmit={(answers) => void submitPostStudy(answers)} /></section></main>}
+    {phase === 'post-study' && <main className={styles.postShell}><section className={styles.postCard}><header className={styles.postHeader}><span>Post-study</span><h1>Trải nghiệm của bạn</h1><p>Hãy trả lời dựa trên playlist vừa xem. Không có câu trả lời đúng hoặc sai. Quy tắc tập trung vẫn còn hiệu lực đến khi gửi thành công.</p></header>{error && <p className={styles.error}>{error}</p>}<PostStudyForm busy={busy} onSubmit={(answers, timing) => void submitPostStudy(answers, timing)} /></section></main>}
   </div>;
 }

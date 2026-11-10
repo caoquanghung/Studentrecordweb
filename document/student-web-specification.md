@@ -1,10 +1,12 @@
 # Student Web — Requirements and Study Protocol Specification
 
-Version: 1.1 — Draft for owner review  
+Version: 1.2 — Implemented baseline for owner review  
 Date: 2026-11-09  
-Status: Specification and questionnaire draft; application implementation has not started.
+Status: Runnable implementation baseline; protocol, consent and production integrations still require owner/institutional review.
 
 Implementation companion: [Student Web technical design](student-web-technical-design.md), covering Record Web reuse, stack, database locking, playback, ZIP/OPFS preparation, telemetry synchronization, purge, configuration and verification.
+
+Implementation location: the `studentweb` application in this repository now covers the initial workflow and administrator scope. “Proposed” protocol labels remain proposals even when code exists; implementation does not itself approve a research procedure. The production assignment algorithm, processed media/manifest ingestion, final consent/contact/retention text, deployment credentials and real-database race qualification remain explicit gates before data collection.
 
 ## 1. Purpose and authority
 

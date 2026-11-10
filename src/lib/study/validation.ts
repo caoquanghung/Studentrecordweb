@@ -18,6 +18,71 @@ export function controlVersion(value: unknown) {
   return Number(value);
 }
 
+export function acknowledgedSequence(value: unknown) {
+  if (!Number.isSafeInteger(value) || Number(value) <= 0) {
+    throw new StudyError(422, 'INVALID_ACKNOWLEDGMENT', 'A positive acknowledged telemetry sequence is required.');
+  }
+  return Number(value);
+}
+
+function enumValue(value: unknown, allowed: readonly string[], field: string) {
+  if (typeof value !== 'string' || !allowed.includes(value)) {
+    throw new StudyError(422, 'INVALID_FORM_RESPONSE', `${field} has an unsupported value.`);
+  }
+  return value;
+}
+
+function boundedText(value: unknown, maximum: number, field: string) {
+  if (value == null) return '';
+  if (typeof value !== 'string' || value.length > maximum) {
+    throw new StudyError(422, 'INVALID_FORM_RESPONSE', `${field} is too long.`);
+  }
+  return value.trim();
+}
+
+function integerChoice(value: unknown, minimum: number, maximum: number, field: string) {
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < minimum || parsed > maximum) {
+    throw new StudyError(422, 'INVALID_FORM_RESPONSE', `${field} is outside the supported range.`);
+  }
+  return parsed;
+}
+
+export function preStudyAnswers(value: unknown) {
+  const answers = requireObject(value);
+  const gender = answers.gender === '' || answers.gender == null
+    ? null
+    : enumValue(answers.gender, ['woman', 'man', 'non-binary', 'self-describe', 'prefer-not'], 'gender');
+  return {
+    age: integerChoice(answers.age, 6, 120, 'age'),
+    gender,
+    education: enumValue(answers.education, [
+      'primary', 'lower-secondary', 'upper-secondary', 'college', 'undergraduate', 'postgraduate', 'other',
+    ], 'education'),
+    major: boundedText(answers.major, 120, 'major'),
+    familiarity: integerChoice(answers.familiarity, 1, 5, 'familiarity'),
+    priorStudy: enumValue(answers.priorStudy, ['no', 'self-study', 'course', 'work'], 'priorStudy'),
+    videoFrequency: enumValue(answers.videoFrequency, ['never', 'monthly', 'weekly', 'several-weekly', 'daily'], 'videoFrequency'),
+    languageComfort: integerChoice(answers.languageComfort, 1, 5, 'languageComfort'),
+    supportNeeds: boundedText(answers.supportNeeds, 500, 'supportNeeds'),
+  };
+}
+
+export function postStudyAnswers(value: unknown) {
+  const answers = requireObject(value);
+  const scaled = ['understanding', 'mentalDemand', 'effort', 'focusEase', 'visualClarity', 'audioClarity', 'satisfaction'];
+  const normalized: Record<string, unknown> = {};
+  for (const field of scaled) normalized[field] = integerChoice(answers[field], 1, 7, field);
+  normalized.pace = enumValue(answers.pace, [
+    'much-too-slow', 'slightly-slow', 'about-right', 'slightly-fast', 'much-too-fast',
+  ], 'pace');
+  normalized.technicalProblem = enumValue(answers.technicalProblem, ['no', 'yes', 'unsure'], 'technicalProblem');
+  normalized.distraction = enumValue(answers.distraction, ['no', 'yes', 'prefer-not'], 'distraction');
+  normalized.helped = boundedText(answers.helped, 1000, 'helped');
+  normalized.improve = boundedText(answers.improve, 1000, 'improve');
+  return normalized;
+}
+
 export function telemetryEvents(value: unknown): TelemetryEvent[] {
   if (!Array.isArray(value) || value.length < 1 || value.length > 100) {
     throw new StudyError(422, 'INVALID_EVENT_BATCH', 'Send between 1 and 100 telemetry events.');

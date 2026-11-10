@@ -1,10 +1,24 @@
 # Student Web — Technical Design
 
-Version: 0.1 — Proposed implementation design  
+Version: 0.2 — Implemented baseline and remaining integration design  
 Date: 2026-11-09  
 Product baseline: [Student Web specification](student-web-specification.md).
 
-This document specifies how to implement the agreed workflow using the same application stack and selected engineering patterns as Record Web. It describes planned work, not functionality already implemented in Student Web. Product protocol decisions still marked Proposed in the baseline remain subject to review.
+This document specifies the implemented baseline and the remaining production integration work using the same application stack and selected engineering patterns as Record Web. Product protocol decisions still marked Proposed in the baseline remain subject to review even where the current application exercises them.
+
+### Implementation snapshot
+
+The current `studentweb` source includes Clerk-aware RBAC, invitation membership, a Neon schema/migration, transactional PostgreSQL lifecycle functions, server-backed demo mode, quota reservation, readiness checks, cloud/ZIP playback, OPFS with a bounded Blob fallback, IndexedDB telemetry retry, invalid-attempt purge, post-study completion proof, initial admin views, audit records and pseudonymous CSV/JSON exports.
+
+The following remain deliberate production gates rather than silently simulated functionality:
+
+- connect the owner's assignment/balancing algorithm in place of `ALGORITHM_NOT_CONFIGURED`;
+- ingest real immutable combination/media manifests and pipeline-produced hashes;
+- approve and version the final consent, contacts, retention, withdrawal and age/permission procedure;
+- configure and qualify Clerk, Neon, media CORS/range behavior, invitation delivery and the cleanup scheduler;
+- run PostgreSQL race/migration tests against an isolated real database and qualify strict playback on supported laptop/browser combinations;
+- decide whether public immutable media URLs are acceptable or private authenticated range delivery is required;
+- add server-driven questionnaire definitions, larger-scale paginated admin reads/streaming export jobs, and richer invitation revoke/resend workflows if the study scale requires them.
 
 ## 1. Reuse strategy and evidence
 
@@ -386,11 +400,15 @@ All values below are proposed engineering defaults except the confirmed 30-minut
 | `STUDY_CONNECTION_TIMEOUT_SECONDS` | `20` | Fallback liveness expiry, not a resume grace period after a known interruption. |
 | `STUDY_TELEMETRY_FLUSH_SECONDS` | `5` | Batch cadence; important transitions also flush. |
 | `STUDY_PLAYBACK_SAMPLE_SECONDS` | `1` | Throttled playback checkpoints. |
+| `STUDY_MIN_PLAYBACK_RATIO` | `0.9` | Lower bound for client-monotonic and server-wall elapsed-time plausibility at completion. |
 | `STUDY_TELEMETRY_MAX_BATCH_BYTES` | `262144` | Bound request processing and retries. |
 | `STUDY_TELEMETRY_MAX_BATCH_EVENTS` | `100` | Independent count limit. |
 | `STUDY_MAX_BUFFERING_SECONDS` | `5` | Proposed maximum continuous system stall; requires protocol approval/calibration. |
 | `STUDY_READINESS_TTL_SECONDS` | `120` | Recheck stale readiness before start. |
+| `STUDY_READINESS_SAMPLE_BYTES` | `1048576` | Bounded representative range probe. |
+| `STUDY_READINESS_TIMEOUT_SECONDS` | `15` | Maximum probe duration before preparation fails. |
 | `STUDY_STREAM_BITRATE_MARGIN` | `1.5` | Proposed initial margin; not a claim of reliable playback at this multiplier. |
+| `STUDY_MIN_STREAM_MBPS` | `2` | Study-level minimum when asset bitrate metadata is incomplete. |
 | `STUDY_ZIP_CHUNK_SIZE_BYTES` | `4194304` | Package protocol value; changing it requires a manifest version/config match. |
 | `STUDY_LOCAL_BLOB_FALLBACK_MAX_BYTES` | `268435456` | Bound in-memory fallback; archive and extraction limits are separately enforced. |
 | `STUDY_ADMIN_POLL_SECONDS` | `10` | Initial dashboard freshness target. |

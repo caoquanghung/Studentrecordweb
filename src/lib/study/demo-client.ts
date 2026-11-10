@@ -102,6 +102,10 @@ export function demoStatus(): StudyStatus {
       telemetryFlushSeconds: 5,
       playbackSampleSeconds: 1,
       maxBufferingSeconds: 5,
+      readinessSampleBytes: 1_048_576,
+      readinessTimeoutSeconds: 15,
+      streamBitrateMargin: 1.5,
+      minimumStreamMbps: 2,
     },
   };
 }

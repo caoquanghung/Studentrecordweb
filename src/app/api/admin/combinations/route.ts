@@ -1,6 +1,7 @@
 import { requireObject, StudyError } from '@/lib/study/errors';
 import { adminCombinations, adminCreateCombination } from '@/lib/study/repository';
 import { runApi } from '@/lib/study/route';
+import { jsonBody } from '@/lib/study/http';
 
 export async function GET(request: Request) {
   return runApi(request, 'combinations:manage', false, adminCombinations);
@@ -8,7 +9,7 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   return runApi(request, 'combinations:manage', true, async (context) => {
-    const body = requireObject(await request.json());
+    const body = requireObject(await jsonBody(request));
     const title = typeof body.title === 'string' ? body.title.trim() : '';
     const targetQuota = Number(body.targetQuota);
     if (!title || title.length > 180 || !Number.isSafeInteger(targetQuota) || targetQuota < 0) {

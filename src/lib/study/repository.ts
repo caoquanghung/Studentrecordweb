@@ -25,6 +25,19 @@ function jsonObject(value: unknown) {
   return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
+async function recordAdminAudit(
+  context: AuthContext,
+  action: string,
+  targetType: string,
+  targetId: string,
+  metadata: Record<string, unknown> = {},
+) {
+  if (context.demo) return;
+  const sql = getDb();
+  await sql`INSERT INTO admin_audit_log (actor_user_id, action, target_type, target_id, metadata)
+    VALUES (${context.userId}, ${action}, ${targetType}, ${targetId}, ${JSON.stringify(metadata)}::jsonb);`;
+}
+
 function mapAssignment(row: Row): Assignment {
   return {
     id: text(row.id), combinationId: text(row.combination_id), combinationVersion: number(row.combination_version),
@@ -130,6 +143,10 @@ export async function getStatus(context: AuthContext): Promise<StudyStatus> {
     telemetryFlushSeconds: runtimeConfig.telemetryFlushSeconds,
     playbackSampleSeconds: runtimeConfig.playbackSampleSeconds,
     maxBufferingSeconds: runtimeConfig.maxBufferingSeconds,
+    readinessSampleBytes: runtimeConfig.readinessSampleBytes,
+    readinessTimeoutSeconds: runtimeConfig.readinessTimeoutSeconds,
+    streamBitrateMargin: runtimeConfig.streamBitrateMargin,
+    minimumStreamMbps: runtimeConfig.minimumStreamMbps,
   };
   const participants = await sql`SELECT p.* FROM participants p WHERE p.user_id = ${context.userId} LIMIT 1;`;
   const participant = participants[0];
@@ -156,6 +173,12 @@ export async function getStatus(context: AuthContext): Promise<StudyStatus> {
   const attempts = assignment ? await sql`SELECT * FROM attempts WHERE assignment_id = ${assignment.id}::uuid
     ORDER BY attempt_number DESC LIMIT 1;` : [];
   const attempt = attempts[0] ? mapAttempt(attempts[0]) : null;
+  if (attempts[0] && ['watching', 'post_study', 'completing'].includes(text(attempts[0].status))) {
+    const snapshot = jsonObject(attempts[0].policy_snapshot);
+    if (number(snapshot.telemetryFlushSeconds) > 0) policy.telemetryFlushSeconds = number(snapshot.telemetryFlushSeconds);
+    if (number(snapshot.playbackSampleSeconds) > 0) policy.playbackSampleSeconds = number(snapshot.playbackSampleSeconds);
+    if (number(snapshot.maxBufferingSeconds) > 0) policy.maxBufferingSeconds = number(snapshot.maxBufferingSeconds);
+  }
   const combination = assignment ? await dbCombination(assignment.combinationId, assignment.combinationVersion) : null;
   const post = assignment ? await sql`SELECT 1 FROM form_responses WHERE participant_id = ${pid}::uuid
     AND form_kind = 'post_study' AND form_version = ${text(config.post_study_version)}
@@ -214,7 +237,10 @@ export async function requestAssignment(context: AuthContext) {
     throw new StudyError(409, 'PRE_STUDY_REQUIRED', 'Complete the pre-study form before assignment.');
   }
   const candidates = await sql`SELECT c.id, c.current_version FROM combinations c
-    WHERE c.enabled AND c.target_quota > (
+    WHERE c.enabled AND EXISTS (
+      SELECT 1 FROM combination_videos cv
+      WHERE cv.combination_id = c.id AND cv.combination_version = c.current_version
+    ) AND c.target_quota > (
       SELECT COUNT(*) FROM assignments a WHERE a.combination_id = c.id AND (
         a.status = 'completed' OR (a.status IN ('reserved','retry_required') AND a.reservation_expires_at > clock_timestamp())
         OR (a.status = 'active' AND (a.reservation_expires_at > clock_timestamp() OR EXISTS (
@@ -245,6 +271,7 @@ export async function getPackage(context: AuthContext) {
     WHERE combination_id = ${status.assignment.combinationId}::uuid
       AND version = ${status.assignment.combinationVersion} LIMIT 1;`;
   return {
+    participantId: status.participantId ?? '',
     packageId: versions[0]?.package_id,
     manifest: versions[0]?.manifest,
     manifestSha256: versions[0]?.manifest_sha256,
@@ -257,9 +284,34 @@ export async function saveReadiness(context: AuthContext, sourceMode: SourceMode
   const status = await getStatus(context);
   if (!status.assignment || status.assignment.status === 'released') throw new StudyError(409, 'ASSIGNMENT_REQUIRED', 'An active assignment is required.');
   const sql = getDb();
+  const config = getStudyConfig();
+  if (passed && sourceMode === 'stream') {
+    const measuredMbps = number(metrics.downloadMbps);
+    const measuredVideos = status.combination?.videos.filter((video) => video.sizeBytes && video.durationSeconds > 0) ?? [];
+    const mediaRequirement = measuredVideos.length
+      ? Math.max(...measuredVideos.map((video) => (Number(video.sizeBytes) * 8) / video.durationSeconds / 1_000_000))
+        * config.streamBitrateMargin
+      : 0;
+    const requiredMbps = Math.max(config.minimumStreamMbps, mediaRequirement);
+    if (!Number.isFinite(measuredMbps) || measuredMbps < requiredMbps
+      || number(metrics.sampleBytes) < 65_536
+      || text(metrics.testedVideoId) !== status.combination?.videos[0]?.id) {
+      throw new StudyError(422, 'READINESS_EVIDENCE_INVALID', 'The streaming readiness evidence does not meet the configured policy.');
+    }
+  }
+  if (passed && sourceMode === 'zip') {
+    const versions = await sql`SELECT package_id FROM combination_versions
+      WHERE combination_id = ${status.assignment.combinationId}::uuid
+        AND version = ${status.assignment.combinationVersion} LIMIT 1;`;
+    if (text(metrics.packageId) !== text(versions[0]?.package_id)
+      || number(metrics.videoCount) !== (status.combination?.videos.length ?? 0)) {
+      throw new StudyError(422, 'READINESS_EVIDENCE_INVALID', 'The ZIP readiness evidence does not match the assigned package.');
+    }
+  }
   const rows = await sql`INSERT INTO readiness_results (assignment_id, source_mode, combination_version, status, metrics, expires_at)
     VALUES (${status.assignment.id}::uuid, ${sourceMode}, ${status.assignment.combinationVersion},
-      ${passed ? 'passed' : 'failed'}, ${JSON.stringify(metrics)}::jsonb, NOW() + INTERVAL '2 minutes') RETURNING *;`;
+      ${passed ? 'passed' : 'failed'}, ${JSON.stringify(metrics)}::jsonb,
+      NOW() + make_interval(secs => ${config.readinessTtlSeconds})) RETURNING *;`;
   return rows[0];
 }
 
@@ -269,8 +321,16 @@ export async function startAttempt(context: AuthContext, sourceMode: SourceMode)
   const status = await getStatus(context);
   if (!status.assignment) throw new StudyError(409, 'ASSIGNMENT_REQUIRED', 'An active assignment is required.');
   const sql = getDb();
+  const config = getStudyConfig();
+  const policySnapshot = {
+    connectionTimeoutSeconds: config.connectionTimeoutSeconds,
+    telemetryFlushSeconds: config.telemetryFlushSeconds,
+    playbackSampleSeconds: config.playbackSampleSeconds,
+    maxBufferingSeconds: config.maxBufferingSeconds,
+    minimumPlaybackRatio: config.minimumPlaybackRatio,
+  };
   const rows = await sql`SELECT start_study_attempt(${pid}::uuid, ${status.assignment.id}::uuid,
-    ${sourceMode}, ${getStudyConfig().connectionTimeoutSeconds}) AS result;`;
+    ${sourceMode}, ${config.connectionTimeoutSeconds}, ${JSON.stringify(policySnapshot)}::jsonb) AS result;`;
   const result = jsonObject(rows[0]?.result);
   if (result.error) throw new StudyError(409, text(result.error), 'The study attempt could not be started.');
   return mapAttempt(jsonObject(result.attempt));
@@ -281,7 +341,8 @@ export async function heartbeat(context: AuthContext, attemptId: string, control
   const pid = await participantId(context);
   const sql = getDb();
   const rows = await sql`UPDATE attempts t SET lease_expires_at = clock_timestamp()
-      + make_interval(secs => ${getStudyConfig().connectionTimeoutSeconds})
+      + make_interval(secs => COALESCE(NULLIF(t.policy_snapshot->>'connectionTimeoutSeconds', '')::integer,
+        ${getStudyConfig().connectionTimeoutSeconds}))
     FROM assignments a WHERE t.id = ${attemptId}::uuid AND t.assignment_id = a.id
       AND a.participant_id = ${pid}::uuid AND t.control_version = ${controlVersion}
       AND t.status IN ('watching','post_study','completing') AND t.lease_expires_at > clock_timestamp()
@@ -304,17 +365,19 @@ export async function appendEvents(context: AuthContext, attemptId: string, cont
         AS e("eventId" UUID, sequence BIGINT, "eventType" TEXT, "clientWallTime" TIMESTAMPTZ,
           "clientMonotonicMs" NUMERIC, payload JSONB)
     ), conflicts AS (
-      SELECT COUNT(*)::integer AS count FROM telemetry_events existing
-      CROSS JOIN locked JOIN event_rows incoming
-        ON existing.id = incoming."eventId"
-        OR (existing.attempt_id = locked.id AND existing.sequence = incoming.sequence)
-      WHERE existing.attempt_id <> locked.id
+      SELECT COUNT(*)::integer AS count
+      FROM telemetry_events existing
+      CROSS JOIN locked
+      CROSS JOIN event_rows incoming
+      WHERE (existing.id = incoming."eventId"
+          OR (existing.attempt_id = locked.id AND existing.sequence = incoming.sequence))
+        AND (existing.attempt_id <> locked.id
         OR existing.id <> incoming."eventId"
         OR existing.sequence <> incoming.sequence
         OR existing.event_type IS DISTINCT FROM incoming."eventType"
         OR existing.client_wall_time IS DISTINCT FROM incoming."clientWallTime"
         OR existing.client_monotonic_ms IS DISTINCT FROM incoming."clientMonotonicMs"
-        OR existing.payload IS DISTINCT FROM incoming.payload
+        OR existing.payload IS DISTINCT FROM incoming.payload)
     ), inserted AS (
       INSERT INTO telemetry_events (id, attempt_id, sequence, event_type, client_wall_time, client_monotonic_ms, payload)
       SELECT e."eventId", locked.id, e.sequence, e."eventType", e."clientWallTime", e."clientMonotonicMs", e.payload
@@ -407,12 +470,12 @@ export async function invalidateAttempt(context: AuthContext, attemptId: string,
   return result;
 }
 
-export async function completeAttempt(context: AuthContext, attemptId: string, controlVersion: number) {
-  if (context.demo) return demo.demoComplete(context.email, attemptId, controlVersion);
+export async function completeAttempt(context: AuthContext, attemptId: string, controlVersion: number, acknowledgedSequence: number) {
+  if (context.demo) return demo.demoComplete(context.email, attemptId, controlVersion, acknowledgedSequence);
   const pid = await participantId(context);
   const sql = getDb();
   const rows = await sql`SELECT complete_study_attempt(${pid}::uuid, ${attemptId}::uuid,
-    ${controlVersion}) AS result;`;
+    ${controlVersion}, ${acknowledgedSequence}) AS result;`;
   const result = jsonObject(rows[0]?.result);
   if (result.error) throw new StudyError(409, text(result.error), 'The study could not be completed.');
   return result;
@@ -435,6 +498,8 @@ export async function adminCreateInvitation(context: AuthContext, email: string)
       revoked_at = NULL RETURNING *;`;
   const row = rows[0];
   if (row?.delivery_status === 'sent' && row?.status !== 'send_failed') return row;
+  let outcome: Row;
+  let auditAction: string;
   try {
     const client = await clerkClient();
     const invitation = await client.invitations.createInvitation({
@@ -449,12 +514,18 @@ export async function adminCreateInvitation(context: AuthContext, email: string)
     const delivered = await sql`UPDATE invitations SET delivery_status = 'sent',
       delivery_reference = ${invitation.id}, status = 'pending'
       WHERE id = ${text(row.id)}::uuid RETURNING *;`;
-    return delivered[0];
+    outcome = delivered[0];
+    auditAction = 'invitation.sent';
   } catch {
     const failed = await sql`UPDATE invitations SET delivery_status = 'failed', status = 'send_failed'
       WHERE id = ${text(row.id)}::uuid RETURNING *;`;
-    return failed[0];
+    outcome = failed[0];
+    auditAction = 'invitation.delivery_failed';
   }
+  await recordAdminAudit(context, auditAction, 'invitation', text(row.id), {
+    deliveryStatus: text(outcome.delivery_status),
+  });
+  return outcome;
 }
 
 export async function adminCombinations(context: AuthContext) {
@@ -468,11 +539,15 @@ export async function adminCreateCombination(context: AuthContext, input: { titl
   if (context.demo) return demo.demoAdminCreateCombination(input);
   const sql = getDb();
   const rows = await sql`WITH combination AS (
-      INSERT INTO combinations (title, description, target_quota) VALUES (${input.title}, ${input.description ?? ''}, ${input.targetQuota}) RETURNING *
+      INSERT INTO combinations (title, description, target_quota, enabled) VALUES (${input.title}, ${input.description ?? ''}, ${input.targetQuota}, FALSE) RETURNING *
     ), version AS (
       INSERT INTO combination_versions (combination_id, version, package_id, manifest, total_duration_seconds)
       SELECT id, 1, 'placeholder-' || id::text, jsonb_build_object('schemaVersion', 1, 'videos', '[]'::jsonb), 0 FROM combination
     ) SELECT * FROM combination;`;
+  await recordAdminAudit(context, 'combination.created', 'combination', text(rows[0].id), {
+    targetQuota: input.targetQuota,
+    enabled: false,
+  });
   return dbCombination(text(rows[0].id));
 }
 
@@ -481,6 +556,9 @@ export async function adminUpdateCombination(context: AuthContext, id: string, p
   const sql = getDb();
   const current = await dbCombination(id);
   if (!current) throw new StudyError(404, 'COMBINATION_NOT_FOUND', 'Combination not found.');
+  if (patch.enabled === true && current.videos.length === 0) {
+    throw new StudyError(409, 'COMBINATION_NOT_READY', 'Add a validated content version with at least one video before enabling this combination.');
+  }
   const target = patch.targetQuota ?? current.targetQuota;
   const rows = await sql`UPDATE combinations SET title = ${patch.title ?? current.title},
       description = ${patch.description ?? current.description}, target_quota = ${target},
@@ -491,6 +569,9 @@ export async function adminUpdateCombination(context: AuthContext, id: string, p
           OR status = 'active')
     ) RETURNING id;`;
   if (!rows[0]) throw new StudyError(409, 'QUOTA_BELOW_CURRENT_USAGE', 'Quota cannot be lower than completed and held slots.');
+  await recordAdminAudit(context, 'combination.updated', 'combination', id, {
+    changedFields: Object.keys(patch).sort(),
+  });
   return dbCombination(id);
 }
 
@@ -520,7 +601,8 @@ export async function adminOverview(context: AuthContext) {
     id: text(row.id),
     email: text(row.email),
     status: text(row.status),
-    sentAt: iso(row.created_at ?? row.createdAt),
+    deliveryStatus: text(row.delivery_status ?? row.deliveryStatus),
+    createdAt: iso(row.created_at ?? row.createdAt),
     acceptedAt: row.accepted_at || row.acceptedAt ? iso(row.accepted_at ?? row.acceptedAt) : null,
   }));
   const combinations = (combinationRows as Combination[]).map((combination) => ({
@@ -575,39 +657,80 @@ export async function adminParticipant(context: AuthContext, id: string) {
   const sql = getDb();
   const rows = await sql`SELECT p.*, u.email FROM participants p JOIN app_users u ON u.id = p.user_id WHERE p.id = ${id}::uuid;`;
   if (!rows[0]) throw new StudyError(404, 'PARTICIPANT_NOT_FOUND', 'Participant not found.');
-  const [forms, assignments, telemetry] = await Promise.all([
+  const [forms, assignments, attempts, telemetry] = await Promise.all([
     sql`SELECT * FROM form_responses WHERE participant_id = ${id}::uuid ORDER BY created_at;`,
     sql`SELECT * FROM assignments WHERE participant_id = ${id}::uuid ORDER BY assigned_at;`,
+    sql`SELECT t.* FROM attempts t JOIN assignments a ON a.id = t.assignment_id
+      WHERE a.participant_id = ${id}::uuid ORDER BY t.started_at;`,
     sql`SELECT e.* FROM telemetry_events e JOIN attempts t ON t.id = e.attempt_id
       JOIN assignments a ON a.id = t.assignment_id WHERE a.participant_id = ${id}::uuid ORDER BY e.received_at;`,
   ]);
-  return { participant: rows[0], forms, assignments, telemetry };
+  return { participant: rows[0], forms, assignments, attempts, telemetry };
 }
 
 export async function adminExport(context: AuthContext) {
-  if (context.demo) return { participants: demo.demoAdminParticipants(), combinations: demo.demoAdminCombinations() };
+  if (context.demo) return demo.demoAdminExport();
   const sql = getDb();
-  const [participants, assignments, forms, telemetry, combinations] = await Promise.all([
-    sql`SELECT p.id, u.email, p.created_at FROM participants p JOIN app_users u ON u.id = p.user_id ORDER BY p.id;`,
-    sql`SELECT * FROM assignments ORDER BY assigned_at;`,
-    sql`SELECT * FROM form_responses ORDER BY created_at;`,
-    sql`SELECT * FROM telemetry_events ORDER BY attempt_id, sequence;`,
-    sql`SELECT * FROM combinations ORDER BY id;`,
-  ]);
-  return { exportedAt: new Date().toISOString(), participants, assignments, forms, telemetry, combinations };
+  const rows = await sql`SELECT
+      clock_timestamp() AS exported_at,
+      (SELECT COALESCE(jsonb_agg(to_jsonb(r) ORDER BY r.id), '[]'::jsonb)
+        FROM (SELECT p.id, p.created_at FROM participants p) r) AS participants,
+      (SELECT COALESCE(jsonb_agg(to_jsonb(r) ORDER BY r.assigned_at), '[]'::jsonb)
+        FROM (SELECT * FROM assignments) r) AS assignments,
+      (SELECT COALESCE(jsonb_agg(to_jsonb(r) ORDER BY r.started_at), '[]'::jsonb)
+        FROM (SELECT * FROM attempts) r) AS attempts,
+      (SELECT COALESCE(jsonb_agg(to_jsonb(r) ORDER BY r.created_at), '[]'::jsonb)
+        FROM (SELECT * FROM form_responses) r) AS forms,
+      (SELECT COALESCE(jsonb_agg(to_jsonb(r) ORDER BY r.attempt_id, r.sequence), '[]'::jsonb)
+        FROM (SELECT * FROM telemetry_events) r) AS telemetry,
+      (SELECT COALESCE(jsonb_agg(to_jsonb(r) ORDER BY r.id), '[]'::jsonb)
+        FROM (SELECT * FROM combinations) r) AS combinations,
+      (SELECT COALESCE(jsonb_agg(to_jsonb(r) ORDER BY r.combination_id, r.version), '[]'::jsonb)
+        FROM (SELECT * FROM combination_versions) r) AS combination_versions,
+      (SELECT COALESCE(jsonb_agg(to_jsonb(r) ORDER BY r.combination_id, r.combination_version, r.sequence), '[]'::jsonb)
+        FROM (SELECT * FROM combination_videos) r) AS combination_videos;`;
+  const snapshot = rows[0] ?? {};
+  const exportedAt = iso(snapshot.exported_at);
+  await recordAdminAudit(context, 'study_data.exported', 'study', 'default', {
+    schemaVersion: 'student-study-export-v1',
+    exportedAt,
+    identityMappingIncluded: false,
+  });
+  return {
+    metadata: [{
+      schemaVersion: 'student-study-export-v1',
+      exportedAt,
+      timeZone: 'UTC',
+      identityMappingIncluded: false,
+      invalidAttemptTelemetry: 'purged',
+    }],
+    participants: Array.isArray(snapshot.participants) ? snapshot.participants : [],
+    assignments: Array.isArray(snapshot.assignments) ? snapshot.assignments : [],
+    attempts: Array.isArray(snapshot.attempts) ? snapshot.attempts : [],
+    forms: Array.isArray(snapshot.forms) ? snapshot.forms : [],
+    telemetry: Array.isArray(snapshot.telemetry) ? snapshot.telemetry : [],
+    combinations: Array.isArray(snapshot.combinations) ? snapshot.combinations : [],
+    combinationVersions: Array.isArray(snapshot.combination_versions) ? snapshot.combination_versions : [],
+    combinationVideos: Array.isArray(snapshot.combination_videos) ? snapshot.combination_videos : [],
+  };
 }
 
 export async function cleanup(context: AuthContext) {
   if (context.demo) return demo.demoCleanup();
   const sql = getDb();
-  const invalidated = await sql`WITH expired AS (
-      SELECT t.id, t.control_version, a.participant_id FROM attempts t JOIN assignments a ON a.id = t.assignment_id
-      WHERE t.status IN ('watching','post_study','completing') AND t.lease_expires_at <= clock_timestamp()
-      ORDER BY t.lease_expires_at LIMIT 100
-    ) SELECT invalidate_study_attempt(participant_id, id, control_version, 'connection_timeout') FROM expired;`;
+  const expired = await sql`SELECT t.id, t.control_version, a.participant_id
+    FROM attempts t JOIN assignments a ON a.id = t.assignment_id
+    WHERE t.status IN ('watching','post_study','completing') AND t.lease_expires_at <= clock_timestamp()
+    ORDER BY t.lease_expires_at LIMIT 100;`;
+  let invalidated = 0;
+  for (const attempt of expired) {
+    const result = await sql`SELECT invalidate_study_attempt(${text(attempt.participant_id)}::uuid,
+      ${text(attempt.id)}::uuid, ${number(attempt.control_version)}, 'connection_timeout') AS result;`;
+    if (!jsonObject(result[0]?.result).error) invalidated += 1;
+  }
   const released = await sql`UPDATE assignments SET status = 'released', released_at = clock_timestamp(),
       release_reason = 'reservation_expired', state_version = state_version + 1
     WHERE id IN (SELECT id FROM assignments WHERE status IN ('reserved','retry_required')
       AND reservation_expires_at <= clock_timestamp() ORDER BY reservation_expires_at LIMIT 100) RETURNING id;`;
-  return { invalidated: invalidated.length, released: released.length };
+  return { invalidated, released: released.length };
 }

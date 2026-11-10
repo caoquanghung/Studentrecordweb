@@ -51,6 +51,8 @@
 .statusOk { color: var(--success); font-weight: 850; }
 .statusWait { color: var(--warning); font-weight: 850; }
 .fileInput { display: none; }
+.audioCheck { display: flex; align-items: center; gap: 10px; color: var(--body); font-size: 12px; line-height: 1.5; }
+.audioCheck input { width: 18px; height: 18px; flex: 0 0 auto; accent-color: var(--blue-600); }
 .emptyState { display: grid; justify-items: center; gap: 12px; padding: 32px 20px; text-align: center; }
 .emptyState h2 { font-size: 20px; }
 .emptyState p { max-width: 500px; color: var(--body); font-size: 13px; line-height: 1.6; }

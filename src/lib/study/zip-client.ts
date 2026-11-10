@@ -11,12 +11,18 @@ import type {
 const MANIFEST_MAX_BYTES = 1_048_576;
 const ARCHIVE_MAX_ENTRIES = 256;
 const BLOB_FALLBACK_MAX_BYTES = 268_435_456;
+const OPFS_MAX_BYTES = (() => {
+  const configured = Number(process.env.NEXT_PUBLIC_STUDY_MAX_LOCAL_PACKAGE_BYTES ?? 4_294_967_296);
+  return Number.isSafeInteger(configured) && configured > 0 ? configured : 4_294_967_296;
+})();
+const MAX_COMPRESSION_RATIO = 200;
 const SUPPORTED_MIME_TYPES = new Set(['video/mp4', 'video/webm', 'video/ogg']);
 
 interface PreparedPackage {
   key: string;
   packageId: string;
   urls: Map<string, string>;
+  dispose?: () => Promise<void>;
 }
 
 interface SaveFilePickerWindow extends Window {
@@ -28,8 +34,8 @@ interface SaveFilePickerWindow extends Window {
 
 let preparedPackage: PreparedPackage | null = null;
 
-function packageKey(combinationId: string, contentVersion: number) {
-  return `${combinationId}:v${contentVersion}`;
+function packageKey(participantId: string, combinationId: string, contentVersion: number) {
+  return `${participantId}:${combinationId}:v${contentVersion}`;
 }
 
 function safePath(value: unknown) {
@@ -144,15 +150,78 @@ async function verifyBlob(blob: Blob, expected: StudyPackageManifestVideo) {
 
 function revokePrepared(value: PreparedPackage | null) {
   value?.urls.forEach((url) => URL.revokeObjectURL(url));
+  if (value?.dispose) void value.dispose().catch(() => undefined);
 }
 
-export function getPreparedVideoUrl(combinationId: string, version: number, videoId: string) {
-  if (preparedPackage?.key !== packageKey(combinationId, version)) return null;
+export function clearPreparedPackage() {
+  revokePrepared(preparedPackage);
+  preparedPackage = null;
+}
+
+export function getPreparedVideoUrl(participantId: string, combinationId: string, version: number, videoId: string) {
+  if (preparedPackage?.key !== packageKey(participantId, combinationId, version)) return null;
   return preparedPackage.urls.get(videoId) ?? null;
 }
 
-export function hasPreparedPackage(combinationId: string, version: number) {
-  return preparedPackage?.key === packageKey(combinationId, version);
+export function hasPreparedPackage(participantId: string, combinationId: string, version: number) {
+  return preparedPackage?.key === packageKey(participantId, combinationId, version);
+}
+
+async function opfsPackageDirectory() {
+  if (!navigator.storage?.getDirectory) return null;
+  const root = await navigator.storage.getDirectory();
+  const packages = await root.getDirectoryHandle('studentweb-packages', { create: true });
+  const directoryName = `package-${crypto.randomUUID()}`;
+  const directory = await packages.getDirectoryHandle(directoryName, { create: true });
+  return {
+    directory,
+    dispose: () => packages.removeEntry(directoryName, { recursive: true }),
+  };
+}
+
+async function opfsFileHandle(directory: FileSystemDirectoryHandle, relativePath: string) {
+  const parts = safePath(relativePath).split('/');
+  const fileName = parts.pop();
+  if (!fileName) throw new Error('Đường dẫn video cục bộ không hợp lệ.');
+  let parent = directory;
+  for (const part of parts) parent = await parent.getDirectoryHandle(part, { create: true });
+  return parent.getFileHandle(fileName, { create: true });
+}
+
+async function verifyPlayable(url: string, expected: StudyPackageManifestVideo) {
+  const video = document.createElement('video');
+  video.preload = 'metadata';
+  video.muted = true;
+  await new Promise<void>((resolve, reject) => {
+    let timeout = 0;
+    const cleanup = () => {
+      window.clearTimeout(timeout);
+      video.onloadedmetadata = null;
+      video.onerror = null;
+      video.removeAttribute('src');
+      video.load();
+    };
+    timeout = window.setTimeout(() => {
+      cleanup();
+      reject(new Error(`Không thể đọc metadata ${expected.relativePath}.`));
+    }, 10_000);
+    video.onloadedmetadata = () => {
+      const tolerance = Math.max(2, expected.durationSeconds * 0.02);
+      if (!Number.isFinite(video.duration) || Math.abs(video.duration - expected.durationSeconds) > tolerance) {
+        cleanup();
+        reject(new Error(`Thời lượng ${expected.relativePath} không khớp manifest.`));
+        return;
+      }
+      cleanup();
+      resolve();
+    };
+    video.onerror = () => {
+      cleanup();
+      reject(new Error(`Trình duyệt không thể giải mã ${expected.relativePath}.`));
+    };
+    video.src = url;
+    video.load();
+  });
 }
 
 export async function prepareZipPackage(
@@ -161,22 +230,29 @@ export async function prepareZipPackage(
   onProgress?: (completed: number, total: number) => void,
 ) {
   if (!file.name.toLowerCase().endsWith('.zip')) throw new Error('Vui lòng chọn đúng file ZIP.');
-  if (file.size > BLOB_FALLBACK_MAX_BYTES) throw new Error('Gói ZIP vượt giới hạn 256 MiB của chế độ chuẩn bị hiện tại.');
+  const canUseOpfs = Boolean(navigator.storage?.getDirectory);
+  const packageLimit = canUseOpfs ? OPFS_MAX_BYTES : BLOB_FALLBACK_MAX_BYTES;
+  if (file.size > packageLimit) throw new Error('Gói ZIP vượt giới hạn lưu trữ cục bộ đã cấu hình.');
   const expected = authoritativeManifest(descriptor);
   const reader = new ZipReader(new BlobReader(file), {
     checkOverlappingEntryOnly: true,
     checkOverlappingEntry: true,
   });
   const createdUrls: string[] = [];
+  let opfs: Awaited<ReturnType<typeof opfsPackageDirectory>> = null;
   try {
     const entries = await reader.getEntries();
     if (entries.length < 2 || entries.length > ARCHIVE_MAX_ENTRIES) throw new Error('Số lượng entry trong ZIP không hợp lệ.');
     const paths = new Set<string>();
     for (const entry of entries) {
-      const path = safePath(entry.filename);
+      const path = safePath(entry.directory ? entry.filename.replace(/\/+$/, '') : entry.filename);
       if (paths.has(path)) throw new Error(`ZIP chứa đường dẫn trùng: ${path}.`);
       paths.add(path);
       if (entry.encrypted) throw new Error('ZIP được mã hóa không được hỗ trợ.');
+      if (!entry.directory && entry.uncompressedSize > 1_048_576 && entry.compressedSize > 0
+        && entry.uncompressedSize / entry.compressedSize > MAX_COMPRESSION_RATIO) {
+        throw new Error(`ZIP có tỷ lệ nén bất thường tại ${path}.`);
+      }
     }
     const manifestEntry = entries.find((entry): entry is FileEntry => (
       entry.filename === 'manifest.json' && !entry.directory && 'getData' in entry
@@ -194,33 +270,64 @@ export async function prepareZipPackage(
     if (unexpected) throw new Error(`ZIP chứa file không được khai báo: ${unexpected.filename}.`);
     const totalBytes = expected.videos.reduce((sum, video) => sum + (video.sizeBytes ?? 0), 0);
     const declaredBytes = entries.reduce((sum, entry) => sum + (entry.directory ? 0 : entry.uncompressedSize), 0);
-    if (declaredBytes > BLOB_FALLBACK_MAX_BYTES || totalBytes > BLOB_FALLBACK_MAX_BYTES) {
-      throw new Error('Dung lượng giải nén vượt giới hạn an toàn 256 MiB.');
+    if (declaredBytes > packageLimit || totalBytes > packageLimit) {
+      throw new Error('Dung lượng giải nén vượt giới hạn lưu trữ cục bộ đã cấu hình.');
+    }
+    if (canUseOpfs) {
+      const estimate = await navigator.storage.estimate();
+      const available = estimate.quota == null || estimate.usage == null
+        ? null
+        : Math.max(0, estimate.quota - estimate.usage);
+      if (available !== null && available < declaredBytes * 1.1) {
+        throw new Error('Thiết bị không còn đủ dung lượng origin storage để chuẩn bị package.');
+      }
+      await navigator.storage.persist?.().catch(() => false);
+      opfs = await opfsPackageDirectory();
     }
     const urls = new Map<string, string>();
+    let extractedBytes = 0;
     for (let index = 0; index < expected.videos.length; index += 1) {
       const video = expected.videos[index];
       const entry = entries.find((candidate): candidate is FileEntry => (
         candidate.filename === video.relativePath && !candidate.directory && 'getData' in candidate
       ));
       if (!entry) throw new Error(`ZIP thiếu file ${video.relativePath}.`);
-      const blob = await entry.getData(new BlobWriter(video.mimeType));
+      let blob: Blob;
+      if (opfs) {
+        const fileHandle = await opfsFileHandle(opfs.directory, video.relativePath);
+        const writable = await fileHandle.createWritable();
+        try {
+          await entry.getData(writable);
+        } catch (cause) {
+          await writable.abort(cause).catch(() => undefined);
+          throw cause;
+        }
+        blob = await fileHandle.getFile();
+      } else {
+        blob = await entry.getData(new BlobWriter(video.mimeType));
+      }
+      extractedBytes += blob.size;
+      if (extractedBytes > packageLimit) throw new Error('Dữ liệu giải nén thực tế vượt giới hạn an toàn.');
       await verifyBlob(blob, video);
       const url = URL.createObjectURL(blob);
       createdUrls.push(url);
+      await verifyPlayable(url, video);
       urls.set(video.videoId, url);
       onProgress?.(index + 1, expected.videos.length);
     }
     const next: PreparedPackage = {
-      key: packageKey(expected.combinationId, expected.contentVersion),
+      key: packageKey(descriptor.participantId, expected.combinationId, expected.contentVersion),
       packageId: expected.packageId,
       urls,
+      dispose: opfs?.dispose,
     };
+    opfs = null;
     revokePrepared(preparedPackage);
     preparedPackage = next;
-    return { packageId: next.packageId, videoCount: urls.size, extractedBytes: declaredBytes };
+    return { packageId: next.packageId, videoCount: urls.size, extractedBytes };
   } catch (cause) {
     createdUrls.forEach((url) => URL.revokeObjectURL(url));
+    if (opfs) await opfs.dispose().catch(() => undefined);
     if (cause instanceof SyntaxError) throw new Error('manifest.json không phải JSON hợp lệ.');
     throw cause;
   } finally {

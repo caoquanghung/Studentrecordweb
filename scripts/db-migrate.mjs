@@ -90,13 +90,13 @@ if (command === 'verify') {
     IF to_regprocedure('reserve_study_assignment(uuid,uuid,integer,text,jsonb,integer)') IS NULL THEN
       RAISE EXCEPTION 'Missing reserve_study_assignment';
     END IF;
-    IF to_regprocedure('start_study_attempt(uuid,uuid,text,integer)') IS NULL THEN
+    IF to_regprocedure('start_study_attempt(uuid,uuid,text,integer,jsonb)') IS NULL THEN
       RAISE EXCEPTION 'Missing start_study_attempt';
     END IF;
     IF to_regprocedure('invalidate_study_attempt(uuid,uuid,bigint,text)') IS NULL THEN
       RAISE EXCEPTION 'Missing invalidate_study_attempt';
     END IF;
-    IF to_regprocedure('complete_study_attempt(uuid,uuid,bigint)') IS NULL THEN
+    IF to_regprocedure('complete_study_attempt(uuid,uuid,bigint,bigint)') IS NULL THEN
       RAISE EXCEPTION 'Missing complete_study_attempt';
     END IF;
   END $$;`]);

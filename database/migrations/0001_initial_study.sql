@@ -152,6 +152,7 @@ CREATE TABLE attempts (
     completed_at TIMESTAMPTZ,
     invalidation_reason TEXT,
     purge_status TEXT NOT NULL DEFAULT 'none' CHECK (purge_status IN ('none', 'pending', 'completed')),
+    policy_snapshot JSONB NOT NULL DEFAULT '{}'::jsonb CHECK (jsonb_typeof(policy_snapshot) = 'object'),
     UNIQUE (assignment_id, attempt_number),
     UNIQUE (id, assignment_id)
 );
@@ -259,7 +260,8 @@ BEGIN
           AND status IN ('watching', 'post_study', 'completing')
       );
       UPDATE attempts SET status = 'invalid', invalidated_at = v_now,
-        invalidation_reason = 'connection_timeout', purge_status = 'completed'
+        invalidation_reason = 'connection_timeout', purge_status = 'completed',
+        current_video_sequence = 0, last_accepted_sequence = 0
         WHERE assignment_id = v_existing.id
           AND status IN ('watching', 'post_study', 'completing');
       UPDATE assignments SET status = CASE WHEN reservation_expires_at > v_now
@@ -274,6 +276,12 @@ BEGIN
     SELECT * INTO v_combination FROM combinations WHERE id = p_combination_id FOR UPDATE;
     IF NOT FOUND OR NOT v_combination.enabled OR v_combination.current_version <> p_combination_version THEN
       RETURN jsonb_build_object('error', 'COMBINATION_UNAVAILABLE');
+    END IF;
+    IF NOT EXISTS (
+      SELECT 1 FROM combination_videos
+      WHERE combination_id = p_combination_id AND combination_version = p_combination_version
+    ) THEN
+      RETURN jsonb_build_object('error', 'COMBINATION_NOT_READY');
     END IF;
 
     IF v_existing.id IS NOT NULL THEN
@@ -320,7 +328,8 @@ CREATE OR REPLACE FUNCTION start_study_attempt(
     p_participant_id UUID,
     p_assignment_id UUID,
     p_source_mode TEXT,
-    p_timeout_seconds INTEGER
+    p_timeout_seconds INTEGER,
+    p_policy_snapshot JSONB
 ) RETURNS JSONB LANGUAGE plpgsql VOLATILE AS $$
 DECLARE
     v_assignment assignments%ROWTYPE;
@@ -349,7 +358,8 @@ BEGIN
         AND lease_expires_at <= v_now
     );
     UPDATE attempts SET status = 'invalid', invalidated_at = v_now,
-      invalidation_reason = 'connection_timeout', purge_status = 'completed'
+      invalidation_reason = 'connection_timeout', purge_status = 'completed',
+      current_video_sequence = 0, last_accepted_sequence = 0
       WHERE assignment_id = p_assignment_id
         AND status IN ('watching', 'post_study', 'completing')
         AND lease_expires_at <= v_now;
@@ -374,10 +384,10 @@ BEGIN
     END IF;
     SELECT COALESCE(MAX(attempt_number), 0) + 1 INTO v_number FROM attempts WHERE assignment_id = p_assignment_id;
     INSERT INTO attempts (
-      assignment_id, attempt_number, control_version, source_mode, lease_expires_at, started_at
+      assignment_id, attempt_number, control_version, source_mode, lease_expires_at, started_at, policy_snapshot
     ) VALUES (
       p_assignment_id, v_number, v_number, p_source_mode,
-      v_now + make_interval(secs => p_timeout_seconds), v_now
+      v_now + make_interval(secs => p_timeout_seconds), v_now, COALESCE(p_policy_snapshot, '{}'::jsonb)
     ) RETURNING * INTO v_attempt;
     UPDATE assignments SET status = 'active', state_version = state_version + 1 WHERE id = p_assignment_id;
     RETURN jsonb_build_object('attempt', to_jsonb(v_attempt), 'existing', FALSE);
@@ -412,7 +422,8 @@ BEGIN
     IF v_attempt.control_version <> p_control_version THEN RETURN jsonb_build_object('error', 'STALE_CONTROL'); END IF;
     DELETE FROM telemetry_events WHERE attempt_id = p_attempt_id;
     UPDATE attempts SET status = 'invalid', invalidated_at = v_now,
-      invalidation_reason = LEFT(COALESCE(p_reason, 'interrupted'), 80), purge_status = 'completed'
+      invalidation_reason = LEFT(COALESCE(p_reason, 'interrupted'), 80), purge_status = 'completed',
+      current_video_sequence = 0, last_accepted_sequence = 0
       WHERE id = p_attempt_id RETURNING * INTO v_attempt;
     v_next_status := CASE WHEN v_assignment.reservation_expires_at > v_now THEN 'retry_required' ELSE 'released' END;
     UPDATE assignments SET status = v_next_status,
@@ -427,7 +438,8 @@ $$;
 CREATE OR REPLACE FUNCTION complete_study_attempt(
     p_participant_id UUID,
     p_attempt_id UUID,
-    p_control_version BIGINT
+    p_control_version BIGINT,
+    p_acknowledged_sequence BIGINT
 ) RETURNS JSONB LANGUAGE plpgsql VOLATILE AS $$
 DECLARE
     v_assignment assignments%ROWTYPE;
@@ -436,6 +448,9 @@ DECLARE
     v_required INTEGER;
     v_ended INTEGER;
     v_post_version TEXT;
+    v_total_duration NUMERIC;
+    v_client_elapsed_ms NUMERIC;
+    v_minimum_playback_ratio NUMERIC;
 BEGIN
     SELECT a.* INTO v_assignment FROM assignments a
       JOIN attempts t ON t.assignment_id = a.id
@@ -452,6 +467,10 @@ BEGIN
        OR v_attempt.control_version <> p_control_version OR v_attempt.lease_expires_at <= v_now THEN
       RETURN jsonb_build_object('error', 'ATTEMPT_INVALID');
     END IF;
+    v_minimum_playback_ratio := COALESCE(
+      NULLIF(v_attempt.policy_snapshot->>'minimumPlaybackRatio', '')::numeric,
+      0.9
+    );
     SELECT COUNT(*)::INTEGER INTO v_required FROM combination_videos
       WHERE combination_id = v_assignment.combination_id AND combination_version = v_assignment.combination_version;
     SELECT COUNT(DISTINCT (payload->>'videoId'))::INTEGER INTO v_ended FROM telemetry_events e
@@ -461,7 +480,14 @@ BEGIN
             AND cv.combination_version = v_assignment.combination_version
             AND cv.video_id::text = e.payload->>'videoId'
             AND cv.sequence = (e.payload->>'videoSequence')::integer);
+    SELECT total_duration_seconds INTO v_total_duration FROM combination_versions
+      WHERE combination_id = v_assignment.combination_id AND version = v_assignment.combination_version;
+    SELECT COALESCE(MAX(client_monotonic_ms), 0) INTO v_client_elapsed_ms FROM telemetry_events
+      WHERE attempt_id = p_attempt_id AND event_type = 'video_ended';
     IF v_required = 0 OR v_ended <> v_required
+       OR v_minimum_playback_ratio <= 0 OR v_minimum_playback_ratio > 1
+       OR v_client_elapsed_ms < v_total_duration * 1000 * v_minimum_playback_ratio
+       OR EXTRACT(EPOCH FROM (v_now - v_attempt.started_at)) < v_total_duration * v_minimum_playback_ratio
        OR EXISTS (
          SELECT 1 FROM combination_videos cv
          WHERE cv.combination_id = v_assignment.combination_id
@@ -494,6 +520,8 @@ BEGIN
     END IF;
     IF NOT EXISTS (SELECT 1 FROM telemetry_events WHERE attempt_id = p_attempt_id
         AND event_type = 'post_study_submitted')
+      OR p_acknowledged_sequence <= 0
+      OR p_acknowledged_sequence <> v_attempt.last_accepted_sequence
       OR v_attempt.last_accepted_sequence <> (SELECT COALESCE(MAX(sequence), 0)
         FROM telemetry_events WHERE attempt_id = p_attempt_id) THEN
       RETURN jsonb_build_object('error', 'SYNC_PENDING');

@@ -56,8 +56,9 @@ function event(eventId, sequence) {
 
 test('queues retryable events once and sends them in sequence-preserving batches', async () => {
   const { api, sent } = fixture(2);
-  await api.enqueueTelemetry('attempt-a', event('one', 1));
-  await api.enqueueTelemetry('attempt-a', event('one', 1));
+  const retryable = event('one', 1);
+  await api.enqueueTelemetry('attempt-a', retryable);
+  await api.enqueueTelemetry('attempt-a', retryable);
   await api.enqueueTelemetry('attempt-a', event('two', 2));
 
   assert.deepEqual(
@@ -69,6 +70,16 @@ test('queues retryable events once and sends them in sequence-preserving batches
   assert.deepEqual(JSON.parse(JSON.stringify(sent[0].events.map((item) => item.sequence))), [1, 2]);
   assert.equal(sent[0].controlVersion, 7);
   assert.deepEqual(JSON.parse(JSON.stringify(await api.readTelemetryQueue('attempt-a'))), []);
+});
+
+test('rejects reuse of an event ID or sequence with changed content', async () => {
+  const { api } = fixture();
+  const original = event('one', 1);
+  await api.enqueueTelemetry('attempt-conflict', original);
+  await assert.rejects(
+    () => api.enqueueTelemetry('attempt-conflict', { ...original, payload: { mediaTime: 99 } }),
+    /reused with different content/,
+  );
 });
 
 test('removes only a contiguous acknowledged prefix and retains later events for retry', async () => {

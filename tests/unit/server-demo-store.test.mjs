@@ -34,7 +34,19 @@ function fixture() {
     Date,
     require(name) {
       if (name === '@/lib/study/config') {
-        return { getStudyConfig: () => ({ reservationDurationSeconds: 60, connectionTimeoutSeconds: 20 }) };
+        return { getStudyConfig: () => ({
+          reservationDurationSeconds: 60,
+          heartbeatIntervalSeconds: 5,
+          connectionTimeoutSeconds: 20,
+          telemetryFlushSeconds: 5,
+          playbackSampleSeconds: 1,
+          maxBufferingSeconds: 5,
+          readinessTtlSeconds: 120,
+          readinessSampleBytes: 1_048_576,
+          readinessTimeoutSeconds: 15,
+          streamBitrateMargin: 1.5,
+          minimumStreamMbps: 2,
+        }) };
       }
       if (name === '@/lib/study/errors') return { StudyError };
       throw new Error(`Unexpected dependency: ${name}`);
@@ -156,15 +168,16 @@ test('completes once only after all fixture videos and post-study are present', 
       videoId: '11111111-1111-4111-8111-111111111102', videoSequence: 1,
     }),
   ]);
-  assert.throws(() => api.demoComplete(email, attempt.id, attempt.controlVersion), expectCode('POST_STUDY_REQUIRED'));
+  assert.throws(() => api.demoComplete(email, attempt.id, attempt.controlVersion, 2), expectCode('POST_STUDY_REQUIRED'));
   api.demoSavePostStudy(email, { understanding: 6 }, true);
   api.demoAppendEvents(email, attempt.id, attempt.controlVersion, [
     event('post-study', 3, 'post_study_submitted'),
   ]);
 
-  const completed = api.demoComplete(email, attempt.id, attempt.controlVersion);
+  assert.throws(() => api.demoComplete(email, attempt.id, attempt.controlVersion, 2), expectCode('SYNC_PENDING'));
+  const completed = api.demoComplete(email, attempt.id, attempt.controlVersion, 3);
   assert.equal(completed.completed, true);
   assert.equal(completed.attempt.status, 'completed');
   assert.equal(completed.assignment.status, 'completed');
-  assert.equal(api.demoComplete(email, attempt.id, attempt.controlVersion).completed, true);
+  assert.equal(api.demoComplete(email, attempt.id, attempt.controlVersion, 3).completed, true);
 });

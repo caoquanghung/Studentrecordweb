@@ -5,7 +5,9 @@ build/
 coverage/
 playwright-report/
 test-results/
+.vercel/
 .env*
 !.env.example
 *.tsbuildinfo
 *.log
+.vercel

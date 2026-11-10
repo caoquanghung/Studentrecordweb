@@ -147,6 +147,10 @@ export function demoStatus(email: string, role: 'student' | 'admin'): StudyStatu
       telemetryFlushSeconds: config.telemetryFlushSeconds,
       playbackSampleSeconds: config.playbackSampleSeconds,
       maxBufferingSeconds: config.maxBufferingSeconds,
+      readinessSampleBytes: config.readinessSampleBytes,
+      readinessTimeoutSeconds: config.readinessTimeoutSeconds,
+      streamBitrateMargin: config.streamBitrateMargin,
+      minimumStreamMbps: config.minimumStreamMbps,
     },
   };
 }
@@ -193,6 +197,7 @@ export function demoPackage(email: string) {
   }
   const packageId = `demo-${combination.id}-v${combination.version}`;
   return clone({
+    participantId: item.id,
     packageId,
     manifestSha256: null,
     manifest: {
@@ -218,7 +223,7 @@ export function demoReadiness(email: string, sourceMode: SourceMode, metrics: Re
   expire(item);
   if (!item.assignment || item.assignment.status === 'released') throw new StudyError(409, 'RESERVATION_EXPIRED', 'The reservation expired.');
   item.sourceMode = sourceMode;
-  return { status: 'passed', sourceMode, metrics, expiresAt: new Date(Date.now() + 120_000).toISOString() };
+  return { status: 'passed', sourceMode, metrics, expiresAt: new Date(Date.now() + getStudyConfig().readinessTtlSeconds * 1000).toISOString() };
 }
 
 export function demoStart(email: string, sourceMode: SourceMode) {
@@ -250,6 +255,7 @@ function currentAttempt(email: string, attemptId: string, controlVersion: number
   if (requireLive && attempt.status !== 'completed' && Date.parse(attempt.leaseExpiresAt) <= Date.now()) {
     item.telemetry = [];
     attempt.status = 'invalid';
+    attempt.currentVideoSequence = 0;
     if (item.assignment) {
       item.assignment.status = Date.parse(item.assignment.reservationExpiresAt) > Date.now()
         ? 'retry_required'
@@ -312,6 +318,7 @@ export function demoSavePostStudy(email: string, answers: Record<string, unknown
 export function demoInvalidate(email: string, attemptId: string, controlVersion: number, reason: string) {
   const { item, attempt } = currentAttempt(email, attemptId, controlVersion, false);
   attempt.status = 'invalid';
+  attempt.currentVideoSequence = 0;
   item.telemetry = [];
   if (!item.assignment) throw new StudyError(409, 'ASSIGNMENT_REQUIRED', 'Assignment not found.');
   const eligible = Date.parse(item.assignment.reservationExpiresAt) > Date.now();
@@ -320,7 +327,7 @@ export function demoInvalidate(email: string, attemptId: string, controlVersion:
   return { retryEligible: eligible, reason, assignment: clone(item.assignment), attempt: clone(attempt) };
 }
 
-export function demoComplete(email: string, attemptId: string, controlVersion: number) {
+export function demoComplete(email: string, attemptId: string, controlVersion: number, acknowledgedSequence: number) {
   const { item, attempt } = currentAttempt(email, attemptId, controlVersion);
   if (attempt.status === 'completed' && item.assignment?.status === 'completed') {
     return { completed: true, attempt: clone(attempt), assignment: clone(item.assignment) };
@@ -335,6 +342,7 @@ export function demoComplete(email: string, attemptId: string, controlVersion: n
   while (accepted.has(acceptedThrough + 1)) acceptedThrough += 1;
   const maximumSequence = Math.max(0, ...item.telemetry.map((event) => event.sequence));
   if (!item.telemetry.some((event) => event.eventType === 'post_study_submitted')
+    || acknowledgedSequence <= 0 || acknowledgedSequence !== acceptedThrough
     || acceptedThrough !== maximumSequence) {
     throw new StudyError(409, 'SYNC_PENDING', 'Required telemetry has not synchronized.');
   }
@@ -362,7 +370,7 @@ export function demoAdminCombinations() { return clone(state.combinations); }
 export function demoAdminCreateCombination(input: { title: string; description?: string; targetQuota: number }) {
   const combination: Combination = {
     id: crypto.randomUUID(), title: input.title, description: input.description ?? '', version: 1,
-    targetQuota: input.targetQuota, completedCount: 0, heldCount: 0, enabled: true, videos: [],
+    targetQuota: input.targetQuota, completedCount: 0, heldCount: 0, enabled: false, videos: [],
   };
   state.combinations.push(combination);
   return clone(combination);
@@ -370,6 +378,9 @@ export function demoAdminCreateCombination(input: { title: string; description?:
 export function demoAdminUpdateCombination(id: string, patch: Partial<Pick<Combination, 'title' | 'description' | 'targetQuota' | 'enabled'>>) {
   const combination = state.combinations.find((item) => item.id === id);
   if (!combination) throw new StudyError(404, 'COMBINATION_NOT_FOUND', 'Combination not found.');
+  if (patch.enabled === true && combination.videos.length === 0) {
+    throw new StudyError(409, 'COMBINATION_NOT_READY', 'A combination requires videos before it can be enabled.');
+  }
   Object.assign(combination, patch);
   return clone(combination);
 }
@@ -384,6 +395,28 @@ export function demoAdminParticipant(id: string) {
   const item = [...state.participants.values()].find((value) => value.id === id);
   if (!item) throw new StudyError(404, 'PARTICIPANT_NOT_FOUND', 'Participant not found.');
   return clone({ ...item, combination: combinationFor(item) });
+}
+export function demoAdminExport() {
+  const values = [...state.participants.values()];
+  return clone({
+    metadata: [{
+      schemaVersion: 'student-study-export-v1',
+      exportedAt: new Date().toISOString(),
+      timeZone: 'UTC',
+      identityMappingIncluded: false,
+      invalidAttemptTelemetry: 'purged',
+      mode: 'demo',
+    }],
+    participants: values.map((item) => ({ id: item.id })),
+    assignments: values.flatMap((item) => item.assignment ? [item.assignment] : []),
+    attempts: values.flatMap((item) => item.attempt ? [item.attempt] : []),
+    forms: values.flatMap((item) => [
+      item.preStudy ? { participantId: item.id, formKind: 'pre_study', status: 'submitted', answers: item.preStudy } : null,
+      item.postStudy ? { participantId: item.id, formKind: 'post_study', status: 'submitted', answers: item.postStudy } : null,
+    ].filter(Boolean)),
+    telemetry: values.flatMap((item) => item.telemetry),
+    combinations: state.combinations,
+  });
 }
 export function demoCleanup() {
   let changed = 0;

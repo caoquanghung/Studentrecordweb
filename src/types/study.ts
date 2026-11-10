@@ -59,6 +59,7 @@ export interface StudyPackageManifest {
 }
 
 export interface StudyPackageDescriptor {
+  participantId: string;
   packageId: string;
   manifest?: StudyPackageManifest | Record<string, unknown>;
   manifestSha256?: string | null;
@@ -117,6 +118,10 @@ export interface StudyStatus {
     telemetryFlushSeconds: number;
     playbackSampleSeconds: number;
     maxBufferingSeconds: number;
+    readinessSampleBytes: number;
+    readinessTimeoutSeconds: number;
+    streamBitrateMargin: number;
+    minimumStreamMbps: number;
   };
 }
 

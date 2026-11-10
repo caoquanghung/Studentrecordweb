@@ -37,6 +37,12 @@ async function configuredIdentity(): Promise<AuthContext> {
     const sql = getDb();
     const rows = await sql`SELECT role FROM app_users WHERE id = ${session.userId} LIMIT 1;`;
     if (rows[0]?.role === 'admin') role = 'admin';
+    await sql`INSERT INTO app_users (id, email, normalized_email, role)
+      VALUES (${session.userId}, ${normalizeEmail(primary)}, ${normalizeEmail(primary)}, ${role})
+      ON CONFLICT (id) DO UPDATE SET email = EXCLUDED.email,
+        normalized_email = EXCLUDED.normalized_email,
+        role = CASE WHEN app_users.role = 'admin' THEN 'admin' ELSE EXCLUDED.role END,
+        updated_at = NOW();`;
   }
 
   return {

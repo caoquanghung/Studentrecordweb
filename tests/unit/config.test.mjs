@@ -51,6 +51,12 @@ test('uses one configurable reservation policy without coupling it to liveness',
       telemetryFlushSeconds: 7,
       playbackSampleSeconds: 1,
       maxBufferingSeconds: 5,
+      readinessTtlSeconds: 120,
+      readinessSampleBytes: 1048576,
+      readinessTimeoutSeconds: 15,
+      streamBitrateMargin: 1.5,
+      minimumStreamMbps: 2,
+      minimumPlaybackRatio: 0.9,
       assignmentMode: 'development-stub',
       demoMode: true,
     },
@@ -76,6 +82,9 @@ test('rejects malformed durations and a timeout that cannot outlive a heartbeat'
     });
     assert.throws(() => getStudyConfig(), /must be greater than the heartbeat interval/);
   }
+
+  const invalidRatio = loadConfig({ NODE_ENV: 'test', STUDY_MIN_PLAYBACK_RATIO: '1.1' });
+  assert.throws(() => invalidRatio.getStudyConfig(), /must be at most 1/);
 });
 
 test('fails closed when a production deployment would use the fixture selector', () => {

@@ -2,7 +2,7 @@ import { requireObject, StudyError } from '@/lib/study/errors';
 import { jsonBody } from '@/lib/study/http';
 import { getStatus, savePostStudy } from '@/lib/study/repository';
 import { runApi } from '@/lib/study/route';
-import { controlVersion } from '@/lib/study/validation';
+import { controlVersion, postStudyAnswers } from '@/lib/study/validation';
 
 export async function PUT(request: Request) {
   return runApi(request, 'study:participate', true, async (context) => {
@@ -14,7 +14,7 @@ export async function PUT(request: Request) {
       || status.attempt.controlVersion !== version || status.attempt.status !== 'post_study') {
       throw new StudyError(409, 'POST_STUDY_LOCKED', 'Post-study opens only after every assigned video finishes.');
     }
-    await savePostStudy(context, attemptId, version, requireObject(body.answers), requireObject(body.timing ?? {}), body.submitted === true);
+    await savePostStudy(context, attemptId, version, postStudyAnswers(body.answers), requireObject(body.timing ?? {}), body.submitted === true);
     return getStatus(context);
   });
 }

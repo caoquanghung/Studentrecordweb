@@ -10,6 +10,7 @@
     "lint": "eslint",
     "test:unit": "node --experimental-strip-types --test tests/unit/*.test.mjs",
     "test:e2e": "playwright test",
+    "test:db": "node --env-file-if-exists=.env.test --test tests/integration/*.test.mjs",
     "db:status": "node --env-file-if-exists=.env.local scripts/db-migrate.mjs status",
     "db:migrate": "node --env-file-if-exists=.env.local scripts/db-migrate.mjs migrate",
     "db:verify": "node --env-file-if-exists=.env.local scripts/db-migrate.mjs verify"

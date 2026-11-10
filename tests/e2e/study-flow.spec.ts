@@ -77,6 +77,9 @@ test('gates preparation until a source is ready and keeps ZIP available on a hea
   });
   await page.getByRole('button', { name: 'Kiểm tra khả năng streaming' }).click();
   await expect(page.getByText(/Streaming sẵn sàng/)).toBeVisible();
+  await expect(continueLink).toHaveAttribute('aria-disabled', 'true');
+  await page.getByRole('button', { name: 'Phát âm thử' }).click();
+  await page.getByLabel('Tôi nghe rõ âm thử ở mức âm lượng phù hợp.').check();
   await expect(continueLink).toHaveAttribute('aria-disabled', 'false');
 
   await page.getByRole('button', { name: /Phát từ gói ZIP/ }).click();
