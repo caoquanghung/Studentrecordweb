@@ -41,3 +41,7 @@
   .step span:last-child { display: none; }
   .actions > * { width: 100%; }
 }
+.headerEnd { display: flex; align-items: center; gap: 10px; }
+.signOut { min-height: 38px; display: inline-flex; align-items: center; gap: 7px; padding: 0 14px; color: var(--body); border: 1px solid var(--line); border-radius: 10px; background: white; font-size: 12px; font-weight: 750; cursor: pointer; }
+.signOut:hover { color: var(--danger); border-color: #fecdd3; background: var(--danger-soft); }
+.signOut:disabled { cursor: wait; opacity: .6; }

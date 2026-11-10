@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import Link from 'next/link';
 import { Icon } from '@/components/ui/Icon';
+import { SignOutControl } from '@/components/ui/SignOutControl';
 import styles from './ParticipantShell.module.css';
 
 const steps = [
@@ -19,7 +20,10 @@ export function ParticipantShell({ currentStep, mode, children }: { currentStep:
         <span className={styles.brandMark}><Icon name="book" /></span>
         <span><strong>Lecture Study</strong><span>Nghiên cứu trải nghiệm học tập</span></span>
       </Link>
-      {mode === 'demo' && <span className={styles.mode}>DEMO MODE</span>}
+      <div className={styles.headerEnd}>
+        {mode === 'demo' && <span className={styles.mode}>DEMO MODE</span>}
+        <SignOutControl className={styles.signOut} />
+      </div>
     </header>
     <main className={styles.main}>
       <nav className={styles.stepper} aria-label="Tiến trình trước study">
